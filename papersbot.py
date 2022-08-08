@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Flowbot
+# PapersBot
 #
 # purpose:  read journal RSS feeds and tweet selected entries
 # license:  MIT License
-# author:   Christopher Gordon Thomson
-# e-mail:   christhomson95@hotmail.com
+# author:   François-Xavier Coudert - Adapted by Christopher G. Thomson
+# e-mail:   fxcoudert@gmail.com, christhomson95@hotmail.com
 #
 
 import imghdr
@@ -27,10 +27,14 @@ import tweepy
 
 # This is the regular expression that selects the papers of interest
 regex = re.compile(r"""
-  (   Flow.chemistry
+  (  Flow.chemistry
     | continuous.flow
     | flow.synthesis
     | flow.reactor
+    | photocatalysis
+    | photoredox
+    | photochemistry
+    | energy.transfer.catalysis
   )
   """, re.IGNORECASE | re.VERBOSE)
 
@@ -94,44 +98,38 @@ def downloadImage(url):
 
 
 # Connect to Twitter and authenticate
-#   Credentials are stored in "credentials.yml" which contains four lines:
+#   Credentials are passed in the environment,
+#   or stored in "credentials.yml" which contains four lines:
 #   CONSUMER_KEY: "x1F3s..."
 #   CONSUMER_SECRET: "3VNg..."
 #   ACCESS_KEY: "7109..."
 #   ACCESS_SECRET: "AdnA..."
 #
 def initTwitter():
-    with open("credentials.yml", "r") as f:
-        cred = yaml.safe_load(f)
+    if 'CONSUMER_KEY' in os.environ:
+        cred = {'CONSUMER_KEY': os.environ['CONSUMER_KEY'],
+                'CONSUMER_SECRET': os.environ['CONSUMER_SECRET'],
+                'ACCESS_KEY': os.environ['ACCESS_KEY'],
+                'ACCESS_SECRET': os.environ['ACCESS_SECRET']}
+    else:
+        with open("/home/pi/Twitter/venv/credentials.yml", "r") as f:
+            cred = yaml.safe_load(f)
+
     auth = tweepy.OAuthHandler(cred["CONSUMER_KEY"], cred["CONSUMER_SECRET"])
     auth.set_access_token(cred["ACCESS_KEY"], cred["ACCESS_SECRET"])
     return tweepy.API(auth)
 
 
-def getTwitterConfig(api):
-    # Check for cached configuration, no more than a day old
-    if os.path.isfile("twitter_config.dat"):
-        mtime = os.stat("twitter_config.dat").st_mtime
-        if time.time() - mtime < 24 * 60 * 60:
-            with open("twitter_config.dat", "r") as f:
-                return json.load(f)
-
-    # Otherwise, query the Twitter API and cache the result
-    config = api.configuration()
-    with open("twitter_config.dat", "w") as f:
-        json.dump(config, f)
-    return config
-
-
 # Read our list of feeds from file
 def readFeedsList():
-    with open("feeds.txt", "r") as f:
+    with open("/home/pi/Twitter/venv/feeds.txt", "r") as f:
         feeds = [s.partition("#")[0].strip() for s in f]
         return [s for s in feeds if s]
 
 
 # Remove unwanted text some journals insert into the feeds
 def cleanText(s):
+    s.encode("utf-8")
     # Annoying ASAP tags
     s = s.replace("[ASAP]", "")
     # Some feeds have LF characeters
@@ -139,13 +137,19 @@ def cleanText(s):
     # Remove (arXiv:1903.00279v1 [cond-mat.mtrl-sci])
     s = re.sub(r"\(arXiv:.+\)", "", s)
     # Remove multiple spaces, leading and trailing space
+    s = s.replace("\u2010", "-")
+    # Some feeds have LF characeters
+    s = s.replace("\u2026", "")
+    # Some feeds have LF characeters
+    s = s.replace("\u03b1", "")
+    # Replace latincode thing that keeps breaking tweets    
     return re.sub("\\s\\s+", " ", s).strip()
 
 
 # Read list of feed items already posted
 def readPosted():
     try:
-        with open("posted.dat", "r") as f:
+        with open("/home/pi/Twitter/venv/posted.dat", "r") as f:
             return f.read().splitlines()
     except Exception:
         return []
@@ -162,7 +166,7 @@ class PapersBot:
 
         # Read parameters from configuration file
         try:
-            with open("config.yml", "r") as f:
+            with open("/home/pi/Twitter/venv/config.yml", "r") as f:
                 config = yaml.safe_load(f)
         except Except:
             config = {}
@@ -182,21 +186,21 @@ class PapersBot:
         else:
             self.api = None
 
+        # Maximum shortened URL length (previously short_url_length_https)
+        urllen = 23
+        # Maximum URL length for media (previously characters_reserved_per_media)
+        imglen = 24
         # Determine maximum tweet length
-        if doTweet:
-            twconfig = getTwitterConfig(self.api)
-            urllen = max(twconfig["short_url_length"], twconfig["short_url_length_https"])
-            imglen = twconfig["characters_reserved_per_media"]
-        else:
-            urllen = 23
-            imglen = 24
         self.maxlength = 280 - (urllen + 1) - imglen
 
         # Start-up banner
         print(f"This is PapersBot running at {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         if self.api:
-            last = self.api.user_timeline(count=1)[0].created_at
-            print(f"Last tweet was posted at {last} (UTC)")
+            timeline = self.api.user_timeline(count=1)
+            if len(timeline) > 0:
+                print(f"Last tweet was posted at {timeline[0].created_at} (UTC)")
+            else:
+                print(f"No tweets posted yet? Welcome, new user!")
         print(f"Feed list has {len(self.feeds)} feeds\n")
 
     # Add to tweets posted
